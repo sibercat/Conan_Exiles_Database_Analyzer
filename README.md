@@ -195,5 +195,3 @@ This tool is for analysis purposes only. Always backup your database before perf
 ---
 
 **Happy analyzing! 🎮**
-
-*For the best experience, run analysis during off-peak hours when your server has lower activity.*
