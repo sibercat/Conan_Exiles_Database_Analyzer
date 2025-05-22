@@ -6,78 +6,25 @@ from typing import Tuple, List, Dict, Optional
 from collections import Counter
 from datetime import datetime
 
+# Try to import the specialized analyzers
+try:
+    from SQLite_Item_table import ConanExilesInventoryAnalyzer
+    INVENTORY_ANALYZER_AVAILABLE = True
+except ImportError:
+    INVENTORY_ANALYZER_AVAILABLE = False
+
+try:
+    from SQLite_Game_Events import ConanExilesGameEventsAnalyzer
+    GAME_EVENTS_ANALYZER_AVAILABLE = True
+except ImportError:
+    GAME_EVENTS_ANALYZER_AVAILABLE = False
+
 class ConanExilesDBAnalyzer:
+    """Core database analyzer for general structure and health analysis"""
+    
     # Size thresholds in bytes
     WARNING_SIZE = 730 * 1024 * 1024  # 730MB
     CRITICAL_SIZE = 1024 * 1024 * 1024  # 1GB
-    
-    # Common Conan Exiles Event Type mappings
-    EVENT_TYPE_MAPPING = {
-        # Player Events
-        1: "Player Login",
-        2: "Player Logout", 
-        3: "Player Death",
-        4: "Player Respawn",
-        5: "Player Level Up",
-        86: "Player Movement/Position Update",
-        87: "Player Stats Update",
-        88: "Player Inventory Change",
-        89: "Player Equipment Change",
-        90: "Player Chat Message",
-        91: "Player Command",
-        92: "Player Action/Interaction",
-        93: "Player Crafting",
-        94: "Player Building",
-        95: "Player Harvesting",
-        
-        # Combat Events  
-        99: "Combat Damage Dealt",
-        100: "Combat Damage Received",
-        101: "Combat Kill",
-        102: "Combat PvP",
-        103: "Combat NPC Kill",
-        104: "Weapon/Tool Usage",
-        105: "Combat Block/Dodge",
-        106: "Combat Status Effect",
-        
-        # Building/Construction
-        170: "Building Placed",
-        171: "Building Destroyed", 
-        172: "Building Damaged",
-        173: "Building Repaired",
-        174: "Building Decay",
-        175: "Building Permission Change",
-        176: "Door/Gate Usage",
-        177: "Container Access",
-        178: "Workstation Usage",
-        
-        # Server/Admin Events
-        200: "Server Start",
-        201: "Server Stop", 
-        202: "Admin Command",
-        203: "Ban/Kick Event",
-        204: "Wipe Event",
-        
-        # Clan Events
-        220: "Clan Created",
-        221: "Clan Disbanded",
-        222: "Clan Member Join",
-        223: "Clan Member Leave",
-        224: "Clan Rank Change",
-        
-        # Economy/Trading (if mods)
-        250: "Trade Transaction",
-        251: "Shop Purchase",
-        252: "Currency Change",
-        
-        # Other Common Events
-        300: "NPC Spawn",
-        301: "NPC Death",
-        302: "Resource Spawn",
-        303: "Weather Change",
-        304: "Time/Day Cycle",
-        305: "Server Performance Log"
-    }
     
     def __init__(self, db_path: str, sqlite_exe_path: Optional[str] = None):
         self.db_path = db_path
@@ -161,143 +108,6 @@ class ConanExilesDBAnalyzer:
             'page_size': int(self.run_sqlite_command("PRAGMA page_size;") or 0)
         }
 
-    def get_event_type_name(self, event_id: int) -> str:
-        """Get human-readable name for event type ID"""
-        if event_id in self.EVENT_TYPE_MAPPING:
-            return f"{self.EVENT_TYPE_MAPPING[event_id]} ({event_id})"
-        else:
-            return f"Unknown Event Type {event_id}"
-
-    def analyze_event_patterns(self) -> Dict:
-        """Analyze patterns in game events for additional insights"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if game_events table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='game_events';")
-            if not cursor.fetchone():
-                return {"error": "game_events table not found"}
-            
-            cursor.execute("PRAGMA table_info(game_events);")
-            columns = cursor.fetchall()
-            column_names = [col[1] for col in columns]
-            
-            patterns = {}
-            
-            # Look for player-related patterns
-            player_columns = [col for col in column_names if 'player' in col.lower() or 'user' in col.lower()]
-            if player_columns:
-                player_col = player_columns[0]
-                cursor.execute(f"SELECT {player_col}, COUNT(*) FROM game_events WHERE {player_col} IS NOT NULL GROUP BY {player_col} ORDER BY COUNT(*) DESC LIMIT 10;")
-                patterns["top_players_by_events"] = cursor.fetchall()
-            
-            # Look for time patterns (if timestamp exists)
-            time_columns = [col for col in column_names if any(word in col.lower() for word in ['time', 'date', 'stamp'])]
-            if time_columns:
-                time_col = time_columns[0]
-                try:
-                    # Try to get hourly distribution
-                    cursor.execute(f"""
-                        SELECT strftime('%H', {time_col}) as hour, COUNT(*) 
-                        FROM game_events 
-                        WHERE {time_col} IS NOT NULL 
-                        GROUP BY hour 
-                        ORDER BY hour
-                    """)
-                    patterns["hourly_distribution"] = cursor.fetchall()
-                except:
-                    pass
-            
-            conn.close()
-            return patterns
-            
-        except Exception as e:
-            return {"error": f"Error analyzing patterns: {e}"}
-        """Get database fragmentation information"""
-        if not self.sqlite_exe_path:
-            return {'freelist_count': 0, 'page_count': 0, 'page_size': 0}
-            
-        return {
-            'freelist_count': int(self.run_sqlite_command("PRAGMA freelist_count;") or 0),
-            'page_count': int(self.run_sqlite_command("PRAGMA page_count;") or 0),
-            'page_size': int(self.run_sqlite_command("PRAGMA page_size;") or 0)
-        }
-
-    def analyze_game_events_table(self) -> Dict:
-        """Analyze the game_events table in detail"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if game_events table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='game_events';")
-            if not cursor.fetchone():
-                return {"error": "game_events table not found"}
-            
-            # Get table structure
-            cursor.execute("PRAGMA table_info(game_events);")
-            columns = cursor.fetchall()
-            column_names = [col[1] for col in columns]
-            
-            # Get total count
-            cursor.execute("SELECT COUNT(*) FROM game_events;")
-            total_events = cursor.fetchone()[0]
-            
-            analysis = {
-                "total_events": total_events,
-                "columns": column_names,
-                "event_type_analysis": {},
-                "recent_events": [],
-                "oldest_events": [],
-                "size_impact": {}
-            }
-            
-            # Analyze event types (assuming there's an event_type or similar column)
-            event_type_columns = [col for col in column_names if 'type' in col.lower() or 'event' in col.lower()]
-            
-            if event_type_columns:
-                main_type_col = event_type_columns[0]  # Use first matching column
-                cursor.execute(f"SELECT {main_type_col}, COUNT(*) as count FROM game_events GROUP BY {main_type_col} ORDER BY count DESC LIMIT 20;")
-                event_types = cursor.fetchall()
-                analysis["event_type_analysis"] = {
-                    "column_used": main_type_col,
-                    "top_events": event_types
-                }
-            
-            # Get recent events (if there's a timestamp column)
-            timestamp_columns = [col for col in column_names if any(word in col.lower() for word in ['time', 'date', 'stamp', 'created'])]
-            
-            if timestamp_columns:
-                timestamp_col = timestamp_columns[0]
-                try:
-                    cursor.execute(f"SELECT * FROM game_events ORDER BY {timestamp_col} DESC LIMIT 10;")
-                    analysis["recent_events"] = cursor.fetchall()
-                    
-                    cursor.execute(f"SELECT * FROM game_events ORDER BY {timestamp_col} ASC LIMIT 5;")
-                    analysis["oldest_events"] = cursor.fetchall()
-                except:
-                    pass  # Handle cases where timestamp column might not be sortable
-            
-            # Estimate size contribution
-            cursor.execute("SELECT * FROM game_events LIMIT 100;")
-            sample_rows = cursor.fetchall()
-            if sample_rows:
-                avg_row_size = sum(len(str(row)) for row in sample_rows) / len(sample_rows)
-                estimated_table_size = avg_row_size * total_events
-                analysis["size_impact"] = {
-                    "estimated_size_bytes": estimated_table_size,
-                    "avg_row_size": avg_row_size
-                }
-            
-            conn.close()
-            return analysis
-            
-        except sqlite3.Error as e:
-            return {"error": f"SQLite error: {e}"}
-        except Exception as e:
-            return {"error": f"Error: {e}"}
-
     def analyze_tables(self) -> Tuple[List[Dict], int]:
         """Analyze database tables and return their sizes"""
         try:
@@ -349,138 +159,8 @@ class ConanExilesDBAnalyzer:
             print(f"Error: {e}")
             return [], 0
 
-    def print_game_events_analysis(self, analysis: Dict) -> None:
-        """Print detailed analysis of game_events table"""
-        if "error" in analysis:
-            print(f"\n❌ Game Events Analysis Error: {analysis['error']}")
-            return
-        
-        print("\n" + "="*80)
-        print("🎮 CONAN EXILES GAME EVENTS ANALYSIS")
-        print("="*80)
-        
-        print(f"\n📊 Overview:")
-        print(f"Total Events: {analysis['total_events']:,}")
-        print(f"Table Columns: {', '.join(analysis['columns'])}")
-        
-        if analysis.get('size_impact'):
-            size_info = analysis['size_impact']
-            print(f"Estimated Table Size: {self.format_size(size_info['estimated_size_bytes'])}")
-            print(f"Average Row Size: {size_info['avg_row_size']:.1f} bytes")
-        
-        # Event type analysis
-        if analysis.get('event_type_analysis') and analysis['event_type_analysis'].get('top_events'):
-            print(f"\n🔥 Top Event Types (by frequency):")
-            print(f"Analysis based on column: '{analysis['event_type_analysis']['column_used']}'")
-            
-            event_table = PrettyTable()
-            event_table.field_names = ["Event Type", "ID", "Count", "Percentage", "Est. Size Impact"]
-            event_table.align["Event Type"] = "l"
-            event_table.align["ID"] = "r"
-            event_table.align["Count"] = "r"
-            event_table.align["Percentage"] = "r"
-            event_table.align["Est. Size Impact"] = "r"
-            
-            total_events = analysis['total_events']
-            avg_row_size = analysis.get('size_impact', {}).get('avg_row_size', 100)
-            
-            for event_type, count in analysis['event_type_analysis']['top_events']:
-                percentage = (count / total_events) * 100
-                size_impact = count * avg_row_size
-                event_name = self.get_event_type_name(int(event_type)) if str(event_type).isdigit() else str(event_type)
-                
-                # Split event name and ID for better display
-                if "(" in event_name and event_name.endswith(")"):
-                    name_part = event_name.split(" (")[0]
-                    id_part = event_name.split(" (")[1].rstrip(")")
-                else:
-                    name_part = event_name
-                    id_part = str(event_type)
-                
-                event_table.add_row([
-                    name_part[:35],  # Truncate long event names
-                    id_part,
-                    f"{count:,}",
-                    f"{percentage:.1f}%",
-                    self.format_size(size_impact)
-                ])
-            
-            print(event_table)
-        
-        # Recent events sample
-        if analysis.get('recent_events'):
-            print(f"\n🕐 Recent Events Sample (Latest 10):")
-            recent_table = PrettyTable()
-            if analysis['recent_events']:
-                # Use column names for header
-                recent_table.field_names = [col[:15] for col in analysis['columns']]  # Truncate column names
-                for row in analysis['recent_events'][:5]:  # Show only first 5 for readability
-                    truncated_row = [str(field)[:15] if field is not None else "NULL" for field in row]
-                    recent_table.add_row(truncated_row)
-                print(recent_table)
-        
-        # Advanced pattern analysis
-        patterns = self.analyze_event_patterns()
-        if patterns and not patterns.get("error"):
-            if patterns.get("top_players_by_events"):
-                print(f"\n👥 Most Active Players (by event count):")
-                player_table = PrettyTable()
-                player_table.field_names = ["Player", "Event Count"]
-                player_table.align["Player"] = "l"
-                player_table.align["Event Count"] = "r"
-                
-                for player, count in patterns["top_players_by_events"][:10]:
-                    player_table.add_row([str(player)[:25], f"{count:,}"])
-                print(player_table)
-            
-            if patterns.get("hourly_distribution"):
-                print(f"\n🕐 Event Distribution by Hour:")
-                hour_table = PrettyTable()
-                hour_table.field_names = ["Hour", "Event Count", "Activity Level"]
-                hour_table.align["Hour"] = "r"
-                hour_table.align["Event Count"] = "r"
-                hour_table.align["Activity Level"] = "l"
-                
-                max_hourly = max(count for _, count in patterns["hourly_distribution"])
-                for hour, count in patterns["hourly_distribution"]:
-                    activity_level = "█" * int((count / max_hourly) * 10) if max_hourly > 0 else ""
-                    hour_table.add_row([f"{hour}:00", f"{count:,}", activity_level])
-                print(hour_table)
-        
-        # Enhanced Recommendations
-        print(f"\n💡 Specific Recommendations:")
-        if analysis['total_events'] > 100000:
-            print("- ⚠️  High event count detected - consider regular cleanup")
-        if analysis['total_events'] > 1000000:
-            print("- 🚨 Very high event count - implement automated cleanup")
-        
-        if analysis.get('event_type_analysis') and analysis['event_type_analysis'].get('top_events'):
-            top_event = analysis['event_type_analysis']['top_events'][0]
-            top_event_type, top_count = top_event
-            event_name = self.get_event_type_name(int(top_event_type)) if str(top_event_type).isdigit() else str(top_event_type)
-            
-            if top_count > analysis['total_events'] * 0.3:  # If one event type is >30% of all events
-                print(f"- 🎯 '{event_name}' dominates with {top_count:,} events ({(top_count/analysis['total_events']*100):.1f}%)")
-                
-                # Specific recommendations based on event type
-                event_id = int(top_event_type) if str(top_event_type).isdigit() else 0
-                if event_id == 86:  # Player Movement
-                    print("  💡 Consider reducing player position update frequency in server settings")
-                elif event_id == 92:  # Player Actions
-                    print("  💡 High player interaction - normal for active server")
-                elif event_id == 177:  # Container Access
-                    print("  💡 Frequent container access - consider if all need logging")
-                elif event_id == 174:  # Building Decay
-                    print("  💡 Building decay events - consider cleanup of old structures")
-                elif event_id == 99 or event_id == 100:  # Combat
-                    print("  💡 High combat activity - normal for PvP servers")
-        
-        print("- 📅 Consider archiving events older than 30-90 days")
-        print("- 🔧 Use VACUUM command after cleanup to reclaim space")
-        print("- 📊 Monitor top event types for unusual spikes")
-
-    def generate_report(self, focus_on_events: bool = True) -> None:
-        """Generate and print analysis report"""
+    def generate_general_report(self) -> None:
+        """Generate and print general database structure analysis report"""
         table_info, sqlite_size = self.analyze_tables()
         actual_file_size = self.get_file_size()
         frag_info = self.get_fragmentation_info() if self.sqlite_exe_path else None
@@ -489,14 +169,8 @@ class ConanExilesDBAnalyzer:
             print("No tables found or error occurred!")
             return
         
-        # Game events analysis first if requested
-        if focus_on_events:
-            events_analysis = self.analyze_game_events_table()
-            self.print_game_events_analysis(events_analysis)
-        
-        # Standard table analysis
         print("\n" + "="*80)
-        print("📋 GENERAL DATABASE ANALYSIS")
+        print("📋 GENERAL DATABASE STRUCTURE ANALYSIS")
         print("="*80)
         
         pt = PrettyTable()
@@ -541,30 +215,226 @@ class ConanExilesDBAnalyzer:
             print(f"Free Pages: {free_pages:,}")
             print(f"Free Space: {self.format_size(free_space)}")
             print(f"Fragmentation: {frag_percentage:.1f}%")
+            
+            if frag_percentage > 20:
+                print("⚠️  High fragmentation detected - consider running VACUUM")
         
+        print("\n💡 General Maintenance Recommendations:")
+        print("- Regular database backups before maintenance")
+        print("- Monitor table growth trends")
+        print("- Use specialized analyzers for detailed table analysis")
+        print("- Consider VACUUM command if fragmentation is high")
         print("\nNote: Overhead includes indexes, free space, SQLite page structures, and other metadata")
 
+def show_main_menu():
+    """Display the main menu options"""
+    print("\n" + "="*70)
+    print("🏛️ CONAN EXILES DATABASE ANALYZER SUITE - By: Sibercat")
+    print("="*70)
+    print("Choose an analysis option:")
+    print()
+    
+    print("1. 📋 General Database Analysis")
+    print("   - Database structure overview")
+    print("   - Table sizes and relationships")
+    print("   - Fragmentation analysis")
+    print("   - Overall health check")
+    print()
+    
+    if GAME_EVENTS_ANALYZER_AVAILABLE:
+        print("2. 🎮 Game Events Analysis (Detailed)")
+        print("   - Event type breakdown")
+        print("   - Player activity patterns")
+        print("   - Time-based analysis")
+        print("   - Performance recommendations")
+        print()
+    else:
+        print("2. 🎮 Game Events Analysis (UNAVAILABLE)")
+        print("   - SQLite_Game_Events.py not found")
+        print()
+    
+    if INVENTORY_ANALYZER_AVAILABLE:
+        print("3. 🎒 Item Inventory Analysis (Detailed)")
+        print("   - Player inventory breakdown")
+        print("   - Item distribution analysis")
+        print("   - Inventory type usage")
+        print("   - Player rankings by items")
+        print()
+    else:
+        print("3. 🎒 Item Inventory Analysis (UNAVAILABLE)")
+        print("   - SQLite_Item_table.py not found")
+        print()
+    
+    available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
+    if available_count > 1:
+        print("4. 🔄 All Available Analyses (Complete Report)")
+        print("5. ❌ Exit")
+    else:
+        print("4. ❌ Exit")
+    
+    print("="*70)
+
+def get_database_path():
+    """Get and validate database path from user"""
+    while True:
+        db_path = input("Enter the path to game.db: ").strip()
+        if os.path.exists(db_path):
+            return db_path
+        else:
+            print("❌ Error: Database file not found! Please try again.")
+
+def get_sqlite_exe_path():
+    """Get SQLite executable path (optional)"""
+    sqlite_exe_path = input("Enter the path to sqlite3.exe (or press Enter to skip fragmentation analysis): ").strip()
+    return sqlite_exe_path if sqlite_exe_path else None
+
+def run_all_available_analyses(db_path: str, sqlite_exe_path: Optional[str]):
+    """Run all available analyses"""
+    available_analyzers = []
+    
+    # Always available - General analysis
+    available_analyzers.append(("General Database", "general"))
+    
+    if GAME_EVENTS_ANALYZER_AVAILABLE:
+        available_analyzers.append(("Game Events", "events"))
+    
+    if INVENTORY_ANALYZER_AVAILABLE:
+        available_analyzers.append(("Item Inventory", "inventory"))
+    
+    print(f"\n🔍 Running Complete Analysis Suite...")
+    print(f"Available analyzers: {len(available_analyzers)}")
+    print("This may take a while for large databases...")
+    
+    for i, (name, analyzer_type) in enumerate(available_analyzers, 1):
+        print(f"\n" + "="*60)
+        print(f"PART {i}/{len(available_analyzers)}: {name.upper()} ANALYSIS")
+        print("="*60)
+        
+        if analyzer_type == "general":
+            analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+            analyzer.generate_general_report()
+            
+        elif analyzer_type == "events":
+            events_analyzer = ConanExilesGameEventsAnalyzer(db_path)
+            events_analyzer.run_analysis()
+            
+        elif analyzer_type == "inventory":
+            inventory_analyzer = ConanExilesInventoryAnalyzer(db_path)
+            inventory_analyzer.run_analysis()
+    
+    print(f"\n✅ Complete analysis suite finished!")
+    print(f"Analyzed {len(available_analyzers)} different aspects of your database.")
+
 def main():
-    print("🏛️ Conan Exiles Database Analyzer")
+    """Main function with menu system"""
+    print("🏛️ Conan Exiles Database Analyzer Suite")
     print("=" * 50)
     
-    sqlite_exe_path = input("Enter the path to sqlite3.exe (or press Enter to skip fragmentation analysis): ").strip()
-    db_path = input("Enter the path to game.db: ").strip()
+    # Show availability status
+    available_modules = ["Core Database Analysis"]
+    if GAME_EVENTS_ANALYZER_AVAILABLE:
+        available_modules.append("Game Events Analysis")
+    if INVENTORY_ANALYZER_AVAILABLE:
+        available_modules.append("Item Inventory Analysis")
     
-    if not os.path.exists(db_path):
-        print("❌ Error: Database file not found!")
-        return
+    print(f"Available modules: {', '.join(available_modules)}")
     
-    focus_events = input("Focus on game_events analysis? (y/n, default: y): ").strip().lower()
-    focus_events = focus_events != 'n'
+    if not GAME_EVENTS_ANALYZER_AVAILABLE:
+        print("⚠️  SQLite_Game_Events.py not found - Game Events analysis unavailable")
+    if not INVENTORY_ANALYZER_AVAILABLE:
+        print("⚠️  SQLite_Item_table.py not found - Inventory analysis unavailable")
     
-    print(f"\n🔍 Analyzing database: {os.path.basename(db_path)}")
-    print("Please wait...")
+    # Get database path once
+    db_path = get_database_path()
+    sqlite_exe_path = get_sqlite_exe_path()
     
-    analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path if sqlite_exe_path else None)
-    analyzer.generate_report(focus_on_events=focus_events)
+    print(f"\n✅ Database found: {os.path.basename(db_path)}")
     
-    print(f"\n✅ Analysis complete!")
+    while True:
+        show_main_menu()
+        
+        try:
+            # Determine max choice number based on available analyzers
+            available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
+            max_choice = 5 if available_count > 1 else 4
+            
+            choice = input(f"\nEnter your choice (1-{max_choice}): ").strip()
+            
+            if choice == "1":
+                print(f"\n🔍 Running General Database Analysis...")
+                print("Please wait...")
+                
+                analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+                analyzer.generate_general_report()
+                
+                print(f"\n✅ General analysis complete!")
+                
+            elif choice == "2":
+                if not GAME_EVENTS_ANALYZER_AVAILABLE:
+                    print("\n❌ Game Events analysis is not available.")
+                    print("Please ensure SQLite_Game_Events.py is in the same directory.")
+                    continue
+                    
+                print(f"\n🔍 Running Game Events Analysis...")
+                print("Please wait...")
+                
+                events_analyzer = ConanExilesGameEventsAnalyzer(db_path)
+                events_analyzer.run_analysis()
+                
+                print(f"\n✅ Game Events analysis complete!")
+                
+            elif choice == "3":
+                if not INVENTORY_ANALYZER_AVAILABLE:
+                    print("\n❌ Inventory analysis is not available.")
+                    print("Please ensure SQLite_Item_table.py is in the same directory.")
+                    continue
+                    
+                print(f"\n🔍 Running Item Inventory Analysis...")
+                print("Please wait...")
+                
+                inventory_analyzer = ConanExilesInventoryAnalyzer(db_path)
+                inventory_analyzer.run_analysis()
+                
+                print(f"\n✅ Inventory analysis complete!")
+                
+            elif choice == "4":
+                # This could be "All Analyses" or "Exit" depending on available modules
+                available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
+                
+                if available_count > 1:
+                    # Run all available analyses
+                    run_all_available_analyses(db_path, sqlite_exe_path)
+                else:
+                    # Exit
+                    print("\n👋 Goodbye!")
+                    break
+                    
+            elif choice == "5" and max_choice == 5:
+                print("\n👋 Goodbye!")
+                break
+                
+            else:
+                print(f"\n❌ Invalid choice. Please enter a number between 1 and {max_choice}.")
+                continue
+                
+            # Ask if user wants to continue (except for exit)
+            if choice not in ["4", "5"] or (choice == "4" and available_count > 1):
+                while True:
+                    continue_choice = input("\nWould you like to run another analysis? (y/n): ").strip().lower()
+                    if continue_choice in ['y', 'yes']:
+                        break
+                    elif continue_choice in ['n', 'no']:
+                        print("\n👋 Goodbye!")
+                        return
+                    else:
+                        print("Please enter 'y' for yes or 'n' for no.")
+                        
+        except KeyboardInterrupt:
+            print("\n\n👋 Analysis interrupted. Goodbye!")
+            break
+        except Exception as e:
+            print(f"\n❌ An error occurred: {e}")
+            print("Please try again.")
 
 if __name__ == "__main__":
     main()
