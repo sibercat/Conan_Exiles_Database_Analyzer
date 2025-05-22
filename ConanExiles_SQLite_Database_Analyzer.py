@@ -29,6 +29,13 @@ try:
 except ImportError:
     ORPHANED_ANALYZER_AVAILABLE = False
 
+# NEW: Try to import the Events Cleanup Manager
+try:
+    from SQLite_Events_CleanUp import EventsCleanupManager
+    EVENTS_CLEANUP_AVAILABLE = True
+except ImportError:
+    EVENTS_CLEANUP_AVAILABLE = False
+
 class ConanExilesDBAnalyzer:
     """Enhanced core database analyzer for general structure and health analysis"""
     
@@ -519,9 +526,21 @@ def show_main_menu():
     
     print("5. 🔄 All Available Analyses (Complete Report)")
     print("6. 🧹 Database Cleanup Recommendations")
-    print("7. 🔍 Interactive Query Mode")
-    print("8. 📊 Export Analysis Results")
-    print("9. ❌ Exit")
+    
+    if EVENTS_CLEANUP_AVAILABLE:
+        print("7. 🗑️ Events Cleanup Manager")
+        print("   - Clean old game events by date")
+        print("   - Performance-focused event management")
+        print("   - Export cleanup SQL scripts")
+        print()
+    else:
+        print("7. 🗑️ Events Cleanup Manager (UNAVAILABLE)")
+        print("   - SQLite_Events_CleanUp.py not found")
+        print()
+    
+    print("8. 🔍 Interactive Query Mode")
+    print("9. 📊 Export Analysis Results")
+    print("10. ❌ Exit")
     
     print("="*70)
 
@@ -691,6 +710,7 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode for cleanup')
     parser.add_argument('--export', choices=['json', 'csv'], help='Export results to file')
     parser.add_argument('--interactive', action='store_true', help='Interactive query mode')
+    parser.add_argument('--events-cleanup', type=int, metavar='DAYS', help='Clean events older than DAYS')
     args = parser.parse_args()
     
     print("🏛️ Conan Exiles Database Analyzer Suite")
@@ -704,6 +724,8 @@ def main():
         available_modules.append("Item Inventory Analysis")
     if ORPHANED_ANALYZER_AVAILABLE:
         available_modules.append("Orphaned Items Analysis")
+    if EVENTS_CLEANUP_AVAILABLE:
+        available_modules.append("Events Cleanup Manager")
     
     print(f"Available modules: {', '.join(available_modules)}")
     
@@ -713,6 +735,8 @@ def main():
         print("⚠️  SQLite_Item_table.py not found - Inventory analysis unavailable")
     if not ORPHANED_ANALYZER_AVAILABLE:
         print("⚠️  SQLite_Orphaned_Items_Analysis.py not found - Orphaned Items analysis unavailable")
+    if not EVENTS_CLEANUP_AVAILABLE:
+        print("⚠️  SQLite_Events_CleanUp.py not found - Events Cleanup unavailable")
     
     # Get database path
     if args.database:
@@ -728,6 +752,16 @@ def main():
     # Handle command line options
     if args.interactive:
         run_interactive_mode(db_path)
+        return
+        
+    if args.events_cleanup:
+        if not EVENTS_CLEANUP_AVAILABLE:
+            print("❌ Events cleanup functionality not available - SQLite_Events_CleanUp.py not found")
+            return
+        cleanup_manager = EventsCleanupManager(db_path)
+        print(f"🗑️ Running events cleanup for {args.events_cleanup} days...")
+        if cleanup_manager.backup_database():
+            cleanup_manager.delete_old_events(args.events_cleanup, dry_run=args.dry_run)
         return
         
     if args.cleanup:
@@ -755,7 +789,7 @@ def main():
         show_main_menu()
         
         try:
-            choice = input(f"\nEnter your choice (1-9): ").strip()
+            choice = input(f"\nEnter your choice (1-10): ").strip()
             
             if choice == "1":
                 print(f"\n🔍 Running General Database Analysis...")
@@ -839,12 +873,23 @@ def main():
                         break
                     else:
                         print("Please enter 'y' for yes or 'n' for no.")
-                
+                        
             elif choice == "7":
+                # Events Cleanup Manager (Modular)
+                if not EVENTS_CLEANUP_AVAILABLE:
+                    print("\n❌ Events Cleanup Manager is not available.")
+                    print("Please ensure SQLite_Events_CleanUp.py is in the same directory.")
+                    continue
+                    
+                print(f"\n🗑️ Loading Events Cleanup Manager...")
+                cleanup_manager = EventsCleanupManager(db_path)
+                cleanup_manager.run_cleanup_manager()
+                
+            elif choice == "8":
                 # Interactive query mode
                 run_interactive_mode(db_path)
                 
-            elif choice == "8":
+            elif choice == "9":
                 # Export analysis results
                 print(f"\n📊 Running complete analysis for export...")
                 results = run_all_available_analyses(db_path, sqlite_exe_path)
@@ -859,16 +904,16 @@ def main():
                     else:
                         print("Please enter 'json' or 'csv'.")
                 
-            elif choice == "9":
+            elif choice == "10":
                 print("\n👋 Goodbye!")
                 break
                 
             else:
-                print(f"\n❌ Invalid choice. Please enter a number between 1 and 9.")
+                print(f"\n❌ Invalid choice. Please enter a number between 1 and 10.")
                 continue
                 
             # Ask if user wants to continue (except for exit)
-            if choice != "9":
+            if choice != "10":
                 while True:
                     continue_choice = input("\nWould you like to run another analysis? (y/n): ").strip().lower()
                     if continue_choice in ['y', 'yes']:
