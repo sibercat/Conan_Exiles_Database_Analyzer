@@ -57,9 +57,8 @@ Conan-Exiles-Database-Analyzer/
 python ConanExiles_SQLite_Database_Analyzer.py
 ```
 Or
-```
-Double click !Start.cmd
-```
+
+**Double click !Start.cmd**
 
 ### Menu Options
 The analyzer provides an interactive menu system:
