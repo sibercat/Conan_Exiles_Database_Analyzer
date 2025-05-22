@@ -55,7 +55,9 @@ Conan-Exiles-Database-Analyzer/
 ### Quick Start
 ```bash
 python ConanExiles_SQLite_Database_Analyzer.py
-or
+```
+Or
+```
 Double click !Start.cmd
 ```
 
