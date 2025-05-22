@@ -1,6 +1,6 @@
 # 🏛️ Conan Exiles Database Analyzer Suite
 
-A comprehensive Python toolkit for analyzing Conan Exiles `game.db` SQLite databases. This suite provides detailed insights into your server's database structure, player inventories, game events, and performance optimization opportunities.
+A comprehensive Python toolkit for analyzing Conan Exiles `game.db` SQLite databases. This suite provides detailed insights into your server's database structure, player inventories, game events, orphaned data, and performance optimization opportunities.
 
 ## 🚀 Features
 
@@ -25,6 +25,26 @@ A comprehensive Python toolkit for analyzing Conan Exiles `game.db` SQLite datab
 - **Storage Optimization**: Inventory type usage patterns and recommendations
 - **Player Name Resolution**: Links owner IDs to actual character names
 
+### 👻 Orphaned Items & Deleted Characters Analysis
+- **Deleted Character Detection**: Identifies orphaned items from deleted characters
+- **Character ID Patterns**: Analyzes deletion patterns (mass cleanup vs individual departures)
+- **Item Recovery Insights**: Shows what items belonged to deleted characters
+- **Database Cleanup**: Provides SQL commands to remove orphaned data
+- **Deletion Statistics**: Differentiates between character IDs and actual players
+
+### 🧹 Database Cleanup & Maintenance
+- **Automated Cleanup Recommendations**: Identifies unnecessary data for removal
+- **Dry Run Mode**: Preview cleanup operations before execution
+- **SQL Command Generation**: Provides safe cleanup commands with explanations
+- **VACUUM Operations**: Database optimization and space reclamation
+- **Safety Checks**: Multiple confirmations before any destructive operations
+
+### 🔍 Interactive Query Mode
+- **SQL Console**: Execute read-only queries directly on the database
+- **Table Explorer**: List all tables and examine their structure
+- **Data Investigation**: Explore your database interactively
+- **Safety Restrictions**: Prevents destructive operations in interactive mode
+
 ## 📁 File Structure
 
 ```
@@ -32,6 +52,8 @@ Conan-Exiles-Database-Analyzer/
 ├── ConanExiles_SQLite_Database_Analyzer.py  # Main controller with menu system
 ├── SQLite_Game_Events.py                    # Game events specialist analyzer
 ├── SQLite_Item_table.py                     # Item inventory specialist analyzer
+├── SQLite_Orphaned_Items_Analysis.py        # Orphaned data specialist analyzer
+├── !Start.cmd                               # Windows batch file for easy launching
 └── README.md                                # This file
 ```
 
@@ -56,9 +78,26 @@ Conan-Exiles-Database-Analyzer/
 ```bash
 python ConanExiles_SQLite_Database_Analyzer.py
 ```
-Or
 
-```Double click !Start.cmd```
+Or on Windows:
+```bash
+# Double click !Start.cmd
+```
+
+### Command Line Options
+```bash
+# Run all analyses automatically
+python ConanExiles_SQLite_Database_Analyzer.py --auto
+
+# Run cleanup recommendations
+python ConanExiles_SQLite_Database_Analyzer.py --cleanup --dry-run
+
+# Interactive query mode
+python ConanExiles_SQLite_Database_Analyzer.py --interactive
+
+# Export results to JSON
+python ConanExiles_SQLite_Database_Analyzer.py --auto --export json
+```
 
 ### Menu Options
 The analyzer provides an interactive menu system:
@@ -66,8 +105,12 @@ The analyzer provides an interactive menu system:
 1. **📋 General Database Analysis** - Complete database health check
 2. **🎮 Game Events Analysis** - Detailed event logging analysis  
 3. **🎒 Item Inventory Analysis** - Player inventory deep dive
-4. **🔄 All Available Analyses** - Run complete analysis suite
-5. **❌ Exit**
+4. **👻 Orphaned Items & Deleted Characters Analysis** - Find deleted character data
+5. **🔄 All Available Analyses** - Run complete analysis suite
+6. **🧹 Database Cleanup Recommendations** - Automated maintenance suggestions
+7. **🔍 Interactive Query Mode** - SQL console for database exploration
+8. **📊 Export Analysis Results** - Save results to JSON or CSV
+9. **❌ Exit**
 
 ### Example Output
 
@@ -80,6 +123,17 @@ The analyzer provides an interactive menu system:
 │  1   │ sibercat-7415       │ SiberCat            │ 2,847      │ Player Inventory, Large     │ 12.35%     │ 284.7 KB        │
 │      │                     │                     │            │ Chest, Vault (+3 more)     │            │                  │
 └──────┴─────────────────────┴─────────────────────┴────────────┴─────────────────────────────┴────────────┴──────────────────┘
+```
+
+#### Orphaned Items Analysis
+```
+📊 Summary:
+Existing Characters: 324
+Deleted Character IDs: 6,520 (includes respawns, resets, etc.)
+Total Orphaned Items: 142,271
+Character ID Turnover: 95.3% of all character IDs ever created
+💡 Note: Deleted Character IDs ≠ Unique Players Lost
+   Many IDs come from character respawns, resets, and server maintenance
 ```
 
 #### Game Events Analysis
@@ -109,7 +163,15 @@ python SQLite_Item_table.py
 
 # Run only game events analysis  
 python SQLite_Game_Events.py
+
+# Run only orphaned items analysis
+python SQLite_Orphaned_Items_Analysis.py
 ```
+
+### Export Capabilities
+- **JSON Export**: Structured data for further processing
+- **CSV Export**: Spreadsheet-compatible format
+- **Deleted Character Lists**: Export lists of deleted characters for investigation
 
 ### Size Warnings
 The analyzer provides automatic warnings for:
@@ -124,19 +186,25 @@ The analyzer provides automatic warnings for:
 - **Performance Issues**: High-frequency events causing bloat
 - **Maintenance Needs**: Fragmentation and cleanup opportunities
 - **Server Health**: Overall database condition and recommendations
+- **Character Lifecycle**: Understanding character creation/deletion patterns
+- **Data Recovery**: Identifying recoverable character information
 
 ### Common Findings
 - **Event Log Bloat**: Player movement events often dominate storage
 - **Inventory Hoarding**: Identifying players with excessive items
 - **Inactive Data**: Old player data consuming unnecessary space
 - **Fragmentation**: Database efficiency degradation over time
+- **Orphaned Items**: Items from deleted characters taking up space
+- **Character Turnover**: Distinguishing between real player departures and technical deletions
 
 ## 🛡️ Safety Features
 
-- **Read-Only Analysis**: Never modifies your database
+- **Read-Only Analysis**: Never modifies your database during analysis
+- **Dry Run Mode**: Preview all cleanup operations before execution
+- **Multiple Confirmations**: Requires explicit confirmation for destructive operations
 - **Error Handling**: Graceful handling of corrupted or locked databases
 - **Backup Reminders**: Automatic recommendations for database backups
-- **Non-Destructive**: All operations are analysis-only
+- **SQL Validation**: Prevents dangerous queries in interactive mode
 
 ## 📋 Requirements
 
@@ -166,6 +234,11 @@ The analyzer provides automatic warnings for:
 - Check that file names match exactly
 - Verify Python can import the modules
 
+**High "Deleted Characters" count**
+- This is normal! The number represents character IDs, not unique players
+- Includes character respawns, resets, and server maintenance operations
+- Use the orphaned items analysis to understand the real impact
+
 **Performance Issues**
 - Large databases (1GB+) may take several minutes to analyze
 - Close other applications to free up memory
@@ -185,7 +258,9 @@ Contributions are welcome! Areas for improvement:
 - Enhanced visualization features
 - Support for additional database tables
 - Performance optimizations for large databases
-- Additional export formats (JSON, CSV, etc.)
+- Additional export formats
+- Character name recovery algorithms
+- Advanced cleanup strategies
 
 ## 📜 License
 
@@ -193,7 +268,7 @@ This project is open source. Feel free to modify and distribute according to you
 
 ## ⚠️ Disclaimer
 
-This tool is for analysis purposes only. Always backup your database before performing any maintenance operations. The analyzer does not modify your database but provides recommendations for manual maintenance.
+This tool is for analysis purposes only. Always backup your database before performing any maintenance operations. While the analyzer includes cleanup recommendations, you should always verify these are appropriate for your server before execution.
 
 ---
 
