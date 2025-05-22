@@ -1,10 +1,14 @@
 import sqlite3
 import os
 import subprocess
+import json
+import csv
+import argparse
 from prettytable import PrettyTable
-from typing import Tuple, List, Dict, Optional
-from collections import Counter
-from datetime import datetime
+from typing import Tuple, List, Dict, Optional, Any
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+from contextlib import contextmanager
 
 # Try to import the specialized analyzers
 try:
@@ -19,16 +23,40 @@ try:
 except ImportError:
     GAME_EVENTS_ANALYZER_AVAILABLE = False
 
+try:
+    from SQLite_Orphaned_Items_Analysis import OrphanedItemsAnalyzer
+    ORPHANED_ANALYZER_AVAILABLE = True
+except ImportError:
+    ORPHANED_ANALYZER_AVAILABLE = False
+
 class ConanExilesDBAnalyzer:
-    """Core database analyzer for general structure and health analysis"""
+    """Enhanced core database analyzer for general structure and health analysis"""
     
     # Size thresholds in bytes
     WARNING_SIZE = 730 * 1024 * 1024  # 730MB
     CRITICAL_SIZE = 1024 * 1024 * 1024  # 1GB
     
+    # Performance thresholds
+    SLOW_QUERY_THRESHOLD = 100000  # rows
+    
     def __init__(self, db_path: str, sqlite_exe_path: Optional[str] = None):
         self.db_path = db_path
         self.sqlite_exe_path = sqlite_exe_path
+
+    @contextmanager
+    def get_db_connection(self):
+        """Context manager for database connections"""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            yield conn
+        except sqlite3.Error as e:
+            print(f"❌ Database connection error: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     @staticmethod
     def format_size(size_in_bytes: float) -> str:
@@ -159,6 +187,203 @@ class ConanExilesDBAnalyzer:
             print(f"Error: {e}")
             return [], 0
 
+    def analyze_performance_issues(self) -> Dict[str, Any]:
+        """Analyze potential performance issues"""
+        issues = {
+            'missing_indexes': [],
+            'large_tables_without_indexes': [],
+            'high_row_tables': [],
+            'fragmentation_issues': [],
+            'orphaned_data': []
+        }
+        
+        try:
+            with self.get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Find tables with high row counts
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = cursor.fetchall()
+                
+                for table in tables:
+                    table_name = table['name']
+                    
+                    # Get row count
+                    cursor.execute(f"SELECT COUNT(*) as cnt FROM '{table_name}';")
+                    row_count = cursor.fetchone()['cnt']
+                    
+                    if row_count > self.SLOW_QUERY_THRESHOLD:
+                        issues['high_row_tables'].append({
+                            'table': table_name,
+                            'rows': row_count
+                        })
+                    
+                    # Check for indexes
+                    cursor.execute(f"PRAGMA index_list('{table_name}');")
+                    indexes = cursor.fetchall()
+                    
+                    if row_count > 10000 and len(indexes) == 0:
+                        issues['large_tables_without_indexes'].append({
+                            'table': table_name,
+                            'rows': row_count
+                        })
+                
+                # Check for orphaned data in item_inventory (if table exists)
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='item_inventory';")
+                if cursor.fetchone():
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='characters';")
+                    if cursor.fetchone():
+                        cursor.execute("""
+                            SELECT COUNT(*) as orphaned_count
+                            FROM item_inventory i
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM characters c WHERE c.id = i.owner_id
+                            )
+                        """)
+                        orphaned_result = cursor.fetchone()
+                        if orphaned_result and orphaned_result['orphaned_count'] > 0:
+                            issues['orphaned_data'].append({
+                                'type': 'orphaned_items',
+                                'count': orphaned_result['orphaned_count']
+                            })
+                    
+        except sqlite3.Error as e:
+            print(f"❌ Performance analysis error: {e}")
+            
+        return issues
+
+    def generate_cleanup_recommendations(self) -> List[Dict]:
+        """Generate specific cleanup SQL commands"""
+        recommendations = []
+        
+        try:
+            with self.get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Check if game_events table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='game_events';")
+                if cursor.fetchone():
+                    # Check for timestamp columns
+                    cursor.execute("PRAGMA table_info(game_events);")
+                    columns = [col[1].lower() for col in cursor.fetchall()]
+                    
+                    timestamp_col = None
+                    for col in ['timestamp', 'created_at', 'event_time', 'time']:
+                        if col in columns:
+                            timestamp_col = col
+                            break
+                    
+                    if timestamp_col:
+                        # Check for old game events
+                        try:
+                            cursor.execute(f"""
+                                SELECT COUNT(*) as old_events 
+                                FROM game_events 
+                                WHERE julianday('now') - julianday(datetime({timestamp_col}/1000, 'unixepoch')) > 30
+                            """)
+                            result = cursor.fetchone()
+                            if result and result['old_events'] > 10000:
+                                recommendations.append({
+                                    'description': f"Delete {result['old_events']} game events older than 30 days",
+                                    'sql': f"DELETE FROM game_events WHERE julianday('now') - julianday(datetime({timestamp_col}/1000, 'unixepoch')) > 30;",
+                                    'impact': 'high'
+                                })
+                        except:
+                            pass
+                
+                # Check for orphaned items
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='item_inventory';")
+                if cursor.fetchone():
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='characters';")
+                    if cursor.fetchone():
+                        cursor.execute("""
+                            SELECT COUNT(*) as orphaned 
+                            FROM item_inventory i
+                            WHERE NOT EXISTS (SELECT 1 FROM characters c WHERE c.id = i.owner_id)
+                        """)
+                        result = cursor.fetchone()
+                        if result and result['orphaned'] > 0:
+                            recommendations.append({
+                                'description': f"Remove {result['orphaned']} orphaned items",
+                                'sql': "DELETE FROM item_inventory WHERE owner_id NOT IN (SELECT id FROM characters);",
+                                'impact': 'medium'
+                            })
+                    
+        except sqlite3.Error as e:
+            print(f"❌ Cleanup recommendation error: {e}")
+            
+        return recommendations
+
+    def export_analysis_report(self, analysis_data: Dict, format: str = 'json'):
+        """Export analysis results to file"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        if format == 'json':
+            filename = f"conan_db_analysis_{timestamp}.json"
+            with open(filename, 'w') as f:
+                json.dump(analysis_data, f, indent=2, default=str)
+        elif format == 'csv':
+            filename = f"conan_db_analysis_{timestamp}.csv"
+            # Convert nested data to flat structure for CSV
+            with open(filename, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Category', 'Metric', 'Value'])
+                for category, data in analysis_data.items():
+                    if isinstance(data, dict):
+                        for key, value in data.items():
+                            writer.writerow([category, key, value])
+                    else:
+                        writer.writerow([category, 'value', data])
+                        
+        print(f"✅ Analysis report exported to {filename}")
+        return filename
+
+    def run_automated_cleanup(self, dry_run: bool = True):
+        """Run automated cleanup with safety checks"""
+        if dry_run:
+            print("\n🔍 DRY RUN MODE - No changes will be made")
+        else:
+            print("\n⚠️  LIVE MODE - Changes will be made to database")
+            confirm = input("Are you sure you want to proceed? (type 'YES' to confirm): ")
+            if confirm != 'YES':
+                print("Cleanup cancelled.")
+                return
+                
+        recommendations = self.generate_cleanup_recommendations()
+        
+        if not recommendations:
+            print("\n✅ No cleanup recommendations found - database appears clean!")
+            return
+        
+        for rec in recommendations:
+            print(f"\n📌 {rec['description']}")
+            print(f"   Impact: {rec['impact']}")
+            print(f"   SQL: {rec['sql']}")
+            
+            if not dry_run:
+                try:
+                    with self.get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(rec['sql'])
+                        affected_rows = cursor.rowcount
+                        conn.commit()
+                        print(f"   ✅ Executed - {affected_rows} rows affected")
+                except sqlite3.Error as e:
+                    print(f"   ❌ Error: {e}")
+                    
+        if not dry_run and recommendations:
+            print("\n🔧 Running VACUUM to optimize database...")
+            self.run_vacuum()
+
+    def run_vacuum(self):
+        """Run VACUUM command to optimize database"""
+        try:
+            with self.get_db_connection() as conn:
+                conn.execute("VACUUM;")
+                print("✅ VACUUM completed successfully")
+        except sqlite3.Error as e:
+            print(f"❌ VACUUM failed: {e}")
+
     def generate_general_report(self) -> None:
         """Generate and print general database structure analysis report"""
         table_info, sqlite_size = self.analyze_tables()
@@ -219,11 +444,26 @@ class ConanExilesDBAnalyzer:
             if frag_percentage > 20:
                 print("⚠️  High fragmentation detected - consider running VACUUM")
         
+        # Performance analysis
+        perf_issues = self.analyze_performance_issues()
+        if any(perf_issues.values()):
+            print("\n⚠️  PERFORMANCE ISSUES DETECTED:")
+            if perf_issues['large_tables_without_indexes']:
+                print("\n📊 Large tables without indexes:")
+                for table in perf_issues['large_tables_without_indexes']:
+                    print(f"   - {table['table']}: {table['rows']:,} rows")
+            
+            if perf_issues['orphaned_data']:
+                print("\n🗑️  Orphaned data found:")
+                for orphan in perf_issues['orphaned_data']:
+                    print(f"   - {orphan['type']}: {orphan['count']:,} records")
+        
         print("\n💡 General Maintenance Recommendations:")
         print("- Regular database backups before maintenance")
         print("- Monitor table growth trends")
         print("- Use specialized analyzers for detailed table analysis")
         print("- Consider VACUUM command if fragmentation is high")
+        print("- Run cleanup recommendations to remove unnecessary data")
         print("\nNote: Overhead includes indexes, free space, SQLite page structures, and other metadata")
 
 def show_main_menu():
@@ -265,14 +505,111 @@ def show_main_menu():
         print("   - SQLite_Item_table.py not found")
         print()
     
-    available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
-    if available_count > 1:
-        print("4. 🔄 All Available Analyses (Complete Report)")
-        print("5. ❌ Exit")
+    if ORPHANED_ANALYZER_AVAILABLE:
+        print("4. 👻 Orphaned Items & Deleted Characters Analysis")
+        print("   - Identify deleted characters from orphaned items")
+        print("   - Deletion patterns and statistics")
+        print("   - Item distribution of deleted characters")
+        print("   - Recovery possibilities")
+        print()
     else:
-        print("4. ❌ Exit")
+        print("4. 👻 Orphaned Items Analysis (UNAVAILABLE)")
+        print("   - SQLite_Orphaned_Items_Analysis.py not found")
+        print()
+    
+    print("5. 🔄 All Available Analyses (Complete Report)")
+    print("6. 🧹 Database Cleanup Recommendations")
+    print("7. 🔍 Interactive Query Mode")
+    print("8. 📊 Export Analysis Results")
+    print("9. ❌ Exit")
     
     print("="*70)
+
+def run_interactive_mode(db_path: str):
+    """Run interactive query mode"""
+    print("\n🔍 INTERACTIVE QUERY MODE")
+    print("Enter SQL queries to explore the database (read-only)")
+    print("Type 'exit' to return to main menu")
+    print("Type 'tables' to list all tables")
+    print("Type 'describe <table>' to see table structure")
+    
+    while True:
+        query = input("\nSQL> ").strip()
+        
+        if query.lower() == 'exit':
+            break
+        elif query.lower() == 'tables':
+            try:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = cursor.fetchall()
+                
+                print("\nTables in database:")
+                for table in tables:
+                    print(f"  - {table[0]}")
+                    
+                conn.close()
+            except sqlite3.Error as e:
+                print(f"Error: {e}")
+                
+        elif query.lower().startswith('describe '):
+            table_name = query[9:].strip()
+            try:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute(f"PRAGMA table_info('{table_name}');")
+                columns = cursor.fetchall()
+                
+                if columns:
+                    pt = PrettyTable()
+                    pt.field_names = ["Column", "Type", "Not Null", "Default", "Primary Key"]
+                    for col in columns:
+                        pt.add_row([col[1], col[2], col[3], col[4], col[5]])
+                    print(pt)
+                else:
+                    print(f"Table '{table_name}' not found")
+                    
+                conn.close()
+            except sqlite3.Error as e:
+                print(f"Error: {e}")
+                
+        else:
+            # Execute query (read-only)
+            dangerous_keywords = ['delete', 'update', 'insert', 'drop', 'alter', 'create']
+            if any(keyword in query.lower() for keyword in dangerous_keywords):
+                print("❌ Only SELECT queries are allowed in interactive mode")
+                continue
+                
+            try:
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(query)
+                
+                rows = cursor.fetchmany(50)  # Limit to 50 rows for display
+                if rows:
+                    # Create table from results
+                    pt = PrettyTable()
+                    pt.field_names = list(rows[0].keys())
+                    
+                    for row in rows:
+                        pt.add_row(list(row))
+                        
+                    print(pt)
+                    
+                    # Check if more rows exist
+                    cursor.execute(query)
+                    all_rows = cursor.fetchall()
+                    total_rows = len(all_rows)
+                    if total_rows > 50:
+                        print(f"\n(Showing first 50 of {total_rows} rows)")
+                else:
+                    print("No results returned")
+                    
+                conn.close()
+            except sqlite3.Error as e:
+                print(f"Query error: {e}")
 
 def get_database_path():
     """Get and validate database path from user"""
@@ -301,9 +638,14 @@ def run_all_available_analyses(db_path: str, sqlite_exe_path: Optional[str]):
     if INVENTORY_ANALYZER_AVAILABLE:
         available_analyzers.append(("Item Inventory", "inventory"))
     
+    if ORPHANED_ANALYZER_AVAILABLE:
+        available_analyzers.append(("Orphaned Items", "orphaned"))
+    
     print(f"\n🔍 Running Complete Analysis Suite...")
     print(f"Available analyzers: {len(available_analyzers)}")
     print("This may take a while for large databases...")
+    
+    analysis_results = {}
     
     for i, (name, analyzer_type) in enumerate(available_analyzers, 1):
         print(f"\n" + "="*60)
@@ -313,6 +655,13 @@ def run_all_available_analyses(db_path: str, sqlite_exe_path: Optional[str]):
         if analyzer_type == "general":
             analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
             analyzer.generate_general_report()
+            # Store results for export
+            table_info, _ = analyzer.analyze_tables()
+            analysis_results['general'] = {
+                'tables': table_info,
+                'file_size': analyzer.get_file_size(),
+                'performance_issues': analyzer.analyze_performance_issues()
+            }
             
         elif analyzer_type == "events":
             events_analyzer = ConanExilesGameEventsAnalyzer(db_path)
@@ -321,12 +670,29 @@ def run_all_available_analyses(db_path: str, sqlite_exe_path: Optional[str]):
         elif analyzer_type == "inventory":
             inventory_analyzer = ConanExilesInventoryAnalyzer(db_path)
             inventory_analyzer.run_analysis()
+            
+        elif analyzer_type == "orphaned":
+            orphaned_analyzer = OrphanedItemsAnalyzer(db_path)
+            orphaned_analysis = orphaned_analyzer.analyze_orphaned_items()
+            orphaned_analyzer.print_analysis(orphaned_analysis)
     
     print(f"\n✅ Complete analysis suite finished!")
     print(f"Analyzed {len(available_analyzers)} different aspects of your database.")
+    
+    return analysis_results
 
 def main():
     """Main function with menu system"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Conan Exiles Database Analyzer')
+    parser.add_argument('database', nargs='?', help='Path to game.db file')
+    parser.add_argument('--auto', action='store_true', help='Run all analyses automatically')
+    parser.add_argument('--cleanup', action='store_true', help='Run cleanup recommendations')
+    parser.add_argument('--dry-run', action='store_true', help='Dry run mode for cleanup')
+    parser.add_argument('--export', choices=['json', 'csv'], help='Export results to file')
+    parser.add_argument('--interactive', action='store_true', help='Interactive query mode')
+    args = parser.parse_args()
+    
     print("🏛️ Conan Exiles Database Analyzer Suite")
     print("=" * 50)
     
@@ -336,6 +702,8 @@ def main():
         available_modules.append("Game Events Analysis")
     if INVENTORY_ANALYZER_AVAILABLE:
         available_modules.append("Item Inventory Analysis")
+    if ORPHANED_ANALYZER_AVAILABLE:
+        available_modules.append("Orphaned Items Analysis")
     
     print(f"Available modules: {', '.join(available_modules)}")
     
@@ -343,9 +711,42 @@ def main():
         print("⚠️  SQLite_Game_Events.py not found - Game Events analysis unavailable")
     if not INVENTORY_ANALYZER_AVAILABLE:
         print("⚠️  SQLite_Item_table.py not found - Inventory analysis unavailable")
+    if not ORPHANED_ANALYZER_AVAILABLE:
+        print("⚠️  SQLite_Orphaned_Items_Analysis.py not found - Orphaned Items analysis unavailable")
     
-    # Get database path once
-    db_path = get_database_path()
+    # Get database path
+    if args.database:
+        db_path = args.database
+        if not os.path.exists(db_path):
+            print("❌ Error: Database file not found!")
+            return
+    else:
+        db_path = get_database_path()
+    
+    sqlite_exe_path = None
+    
+    # Handle command line options
+    if args.interactive:
+        run_interactive_mode(db_path)
+        return
+        
+    if args.cleanup:
+        if not sqlite_exe_path:
+            sqlite_exe_path = get_sqlite_exe_path()
+        analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+        analyzer.run_automated_cleanup(dry_run=args.dry_run)
+        return
+        
+    if args.auto:
+        if not sqlite_exe_path:
+            sqlite_exe_path = get_sqlite_exe_path()
+        results = run_all_available_analyses(db_path, sqlite_exe_path)
+        if args.export:
+            analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+            analyzer.export_analysis_report(results, args.export)
+        return
+    
+    # Normal interactive mode
     sqlite_exe_path = get_sqlite_exe_path()
     
     print(f"\n✅ Database found: {os.path.basename(db_path)}")
@@ -354,11 +755,7 @@ def main():
         show_main_menu()
         
         try:
-            # Determine max choice number based on available analyzers
-            available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
-            max_choice = 5 if available_count > 1 else 4
-            
-            choice = input(f"\nEnter your choice (1-{max_choice}): ").strip()
+            choice = input(f"\nEnter your choice (1-9): ").strip()
             
             if choice == "1":
                 print(f"\n🔍 Running General Database Analysis...")
@@ -398,27 +795,80 @@ def main():
                 print(f"\n✅ Inventory analysis complete!")
                 
             elif choice == "4":
-                # This could be "All Analyses" or "Exit" depending on available modules
-                available_count = sum([1, GAME_EVENTS_ANALYZER_AVAILABLE, INVENTORY_ANALYZER_AVAILABLE])
-                
-                if available_count > 1:
-                    # Run all available analyses
-                    run_all_available_analyses(db_path, sqlite_exe_path)
-                else:
-                    # Exit
-                    print("\n👋 Goodbye!")
-                    break
+                if not ORPHANED_ANALYZER_AVAILABLE:
+                    print("\n❌ Orphaned Items analysis is not available.")
+                    print("Please ensure SQLite_Orphaned_Items_Analysis.py is in the same directory.")
+                    continue
                     
-            elif choice == "5" and max_choice == 5:
+                print(f"\n🔍 Running Orphaned Items & Deleted Characters Analysis...")
+                print("Please wait...")
+                
+                orphaned_analyzer = OrphanedItemsAnalyzer(db_path)
+                orphaned_analysis = orphaned_analyzer.analyze_orphaned_items()
+                orphaned_analyzer.print_analysis(orphaned_analysis)
+                
+                # Offer export option
+                if 'deleted_characters' in orphaned_analysis and orphaned_analysis['deleted_characters']:
+                    export = input("\nWould you like to export the deleted character list to CSV? (y/n): ").strip().lower()
+                    if export in ['y', 'yes']:
+                        orphaned_analyzer.export_deleted_characters(orphaned_analysis)
+                
+                print(f"\n✅ Orphaned Items analysis complete!")
+                
+            elif choice == "5":
+                # Run all available analyses
+                results = run_all_available_analyses(db_path, sqlite_exe_path)
+                
+            elif choice == "6":
+                # Database cleanup recommendations
+                print(f"\n🧹 Analyzing database for cleanup opportunities...")
+                analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+                
+                while True:
+                    cleanup_choice = input("\nDo you want to run in dry-run mode first? (y/n): ").strip().lower()
+                    if cleanup_choice in ['y', 'yes']:
+                        analyzer.run_automated_cleanup(dry_run=True)
+                        
+                        # Ask if they want to proceed with actual cleanup
+                        proceed = input("\nDo you want to proceed with actual cleanup? (y/n): ").strip().lower()
+                        if proceed in ['y', 'yes']:
+                            analyzer.run_automated_cleanup(dry_run=False)
+                        break
+                    elif cleanup_choice in ['n', 'no']:
+                        analyzer.run_automated_cleanup(dry_run=False)
+                        break
+                    else:
+                        print("Please enter 'y' for yes or 'n' for no.")
+                
+            elif choice == "7":
+                # Interactive query mode
+                run_interactive_mode(db_path)
+                
+            elif choice == "8":
+                # Export analysis results
+                print(f"\n📊 Running complete analysis for export...")
+                results = run_all_available_analyses(db_path, sqlite_exe_path)
+                
+                while True:
+                    export_format = input("\nExport format (json/csv): ").strip().lower()
+                    if export_format in ['json', 'csv']:
+                        analyzer = ConanExilesDBAnalyzer(db_path, sqlite_exe_path)
+                        filename = analyzer.export_analysis_report(results, export_format)
+                        print(f"\n✅ Analysis exported to: {filename}")
+                        break
+                    else:
+                        print("Please enter 'json' or 'csv'.")
+                
+            elif choice == "9":
                 print("\n👋 Goodbye!")
                 break
                 
             else:
-                print(f"\n❌ Invalid choice. Please enter a number between 1 and {max_choice}.")
+                print(f"\n❌ Invalid choice. Please enter a number between 1 and 9.")
                 continue
                 
             # Ask if user wants to continue (except for exit)
-            if choice not in ["4", "5"] or (choice == "4" and available_count > 1):
+            if choice != "9":
                 while True:
                     continue_choice = input("\nWould you like to run another analysis? (y/n): ").strip().lower()
                     if continue_choice in ['y', 'yes']:
