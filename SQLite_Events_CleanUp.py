@@ -114,7 +114,7 @@ class EventsCleanupManager:
             return {"error": f"Error getting stats: {e}"}
     
     def show_cleanup_recommendations(self, stats: Dict):
-        """Show cleanup recommendations based on stats"""
+        """Show cleanup recommendations based on stats - FIXED VERSION"""
         print("\n🧹 EVENTS CLEANUP RECOMMENDATIONS")
         print("="*50)
         
@@ -135,25 +135,61 @@ class EventsCleanupManager:
             print("\n💡 Recommended Cleanup Options:")
             print("────────────────────────────────")
             
-            # Calculate cleanup scenarios
+            # Calculate cleanup scenarios using ACTUAL database queries
             scenarios = [
                 (7, "Aggressive - Keep 1 week (minimal history)"),
                 (30, "Moderate - Keep 1 month (balanced)"),
                 (90, "Conservative - Keep 3 months (detailed history)")
             ]
             
-            for days, description in scenarios:
-                cutoff_date = datetime.now() - timedelta(days=days)
-                if cutoff_date > stats['oldest_date']:
-                    events_to_delete = int(events_per_day * (datetime.now() - cutoff_date).days)
-                    events_to_keep = stats['total_events'] - events_to_delete
-                    percentage_delete = (events_to_delete / stats['total_events']) * 100
-                    
-                    print(f"\n{description}:")
-                    print(f"  Delete: {events_to_delete:,} events ({percentage_delete:.1f}%)")
-                    print(f"  Keep: {events_to_keep:,} events")
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                time_col = stats['time_column']
+                
+                for days, description in scenarios:
+                    cutoff_date = datetime.now() - timedelta(days=days)
+                    if cutoff_date > stats['oldest_date']:
+                        
+                        # BUILD PROPER WHERE CLAUSE based on time column type
+                        if 'worldtime' in time_col.lower():
+                            cutoff_timestamp = int(cutoff_date.timestamp())
+                            where_clause = f"{time_col} < {cutoff_timestamp}"
+                        else:
+                            cutoff_str = cutoff_date.isoformat()
+                            where_clause = f"{time_col} < '{cutoff_str}'"
+                        
+                        # GET ACTUAL COUNT from database
+                        cursor.execute(f"SELECT COUNT(*) FROM game_events WHERE {where_clause};")
+                        events_to_delete = cursor.fetchone()[0]
+                        
+                        events_to_keep = stats['total_events'] - events_to_delete
+                        percentage_delete = (events_to_delete / stats['total_events']) * 100
+                        
+                        print(f"\n{description}:")
+                        print(f"  Delete: {events_to_delete:,} events ({percentage_delete:.1f}%)")
+                        print(f"  Keep: {events_to_keep:,} events")
+                
+                conn.close()
+                
+            except Exception as e:
+                print(f"⚠️ Could not calculate precise recommendations: {e}")
+                print("Using estimated calculations instead...")
+                
+                # Fallback to original estimation method
+                for days, description in scenarios:
+                    cutoff_date = datetime.now() - timedelta(days=days)
+                    if cutoff_date > stats['oldest_date']:
+                        events_to_delete = int(events_per_day * (datetime.now() - cutoff_date).days)
+                        events_to_keep = stats['total_events'] - events_to_delete
+                        percentage_delete = (events_to_delete / stats['total_events']) * 100
+                        
+                        print(f"\n{description} (ESTIMATED):")
+                        print(f"  Delete: ~{events_to_delete:,} events (~{percentage_delete:.1f}%)")
+                        print(f"  Keep: ~{events_to_keep:,} events")
         
-        # Performance recommendations
+        # Performance recommendations (unchanged)
         if stats['total_events'] > 1000000:
             print("\n⚠️  PERFORMANCE IMPACT:")
             print("- Database has >1M events - cleanup strongly recommended")
