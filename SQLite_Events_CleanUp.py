@@ -114,7 +114,7 @@ class EventsCleanupManager:
             return {"error": f"Error getting stats: {e}"}
     
     def show_cleanup_recommendations(self, stats: Dict):
-        """Show cleanup recommendations based on stats - FIXED VERSION"""
+        """Show cleanup recommendations based on stats"""
         print("\n🧹 EVENTS CLEANUP RECOMMENDATIONS")
         print("="*50)
         
@@ -189,7 +189,7 @@ class EventsCleanupManager:
                         print(f"  Delete: ~{events_to_delete:,} events (~{percentage_delete:.1f}%)")
                         print(f"  Keep: ~{events_to_keep:,} events")
         
-        # Performance recommendations (unchanged)
+        # Performance recommendations
         if stats['total_events'] > 1000000:
             print("\n⚠️  PERFORMANCE IMPACT:")
             print("- Database has >1M events - cleanup strongly recommended")
