@@ -56,7 +56,7 @@ python ConanExiles_SQLite_Database_Analyzer.py --events-cleanup 30
 8. **🔍 Interactive Query Mode** - SQL console for exploration
 9. **📊 Export Results** - JSON/CSV export
 
-## 🛡️ Revolutionary Safety Features
+## 🛡️ Safety Features
 
 ### ⚠️ Prevents Database Disasters
 Most community cleanup scripts use this **DANGEROUS** approach:
