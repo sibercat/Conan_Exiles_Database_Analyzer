@@ -513,11 +513,11 @@ def show_main_menu():
         print()
     
     if ORPHANED_ANALYZER_AVAILABLE:
-        print("4. 👻 Orphaned Items & Deleted Characters Analysis")
-        print("   - Identify deleted characters from orphaned items")
-        print("   - Deletion patterns and statistics")
-        print("   - Item distribution of deleted characters")
-        print("   - Recovery possibilities")
+        print("4. 🏥 Database Health & Item Ownership Analysis")
+        print("   - Check if cleanup is actually needed")
+        print("   - Understand normal vs problematic items") 
+        print("   - Safe cleanup recommendations")
+        print("   - Prevent accidental chest destruction")
         print()
     else:
         print("4. 👻 Orphaned Items Analysis (UNAVAILABLE)")
@@ -837,17 +837,15 @@ def main():
                 print(f"\n🔍 Running Orphaned Items & Deleted Characters Analysis...")
                 print("Please wait...")
                 
-                orphaned_analyzer = OrphanedItemsAnalyzer(db_path)
-                orphaned_analysis = orphaned_analyzer.analyze_orphaned_items()
-                orphaned_analyzer.print_analysis(orphaned_analysis)
+                from SQLite_Orphaned_Items_Analysis import OrphanedItemsAnalyzer
+                analyzer = OrphanedItemsAnalyzer(db_path)
+                analysis = analyzer.analyze_orphaned_items()
+                cleanup_commands = analyzer.print_analysis(analysis)
+                analyzer.run_main_menu(analysis, cleanup_commands)
                 
-                # Offer export option
-                if 'deleted_characters' in orphaned_analysis and orphaned_analysis['deleted_characters']:
-                    export = input("\nWould you like to export the deleted character list to CSV? (y/n): ").strip().lower()
-                    if export in ['y', 'yes']:
-                        orphaned_analyzer.export_deleted_characters(orphaned_analysis)
-                
-                print(f"\n✅ Orphaned Items analysis complete!")
+                # Skip the "run another analysis" prompt since orphaned analyzer has its own menu
+                print(f"\n✅ Returning to main menu...")
+                continue
                 
             elif choice == "5":
                 # Run all available analyses
