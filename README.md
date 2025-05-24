@@ -1,7 +1,5 @@
 # 🏛️ Conan Exiles Database Analyzer Suite
 
-**By: Sibercat**
-
 A comprehensive Python toolkit for analyzing and maintaining Conan Exiles `game.db` SQLite databases with enterprise-grade safety features.
 
 ## 🚀 Key Features
